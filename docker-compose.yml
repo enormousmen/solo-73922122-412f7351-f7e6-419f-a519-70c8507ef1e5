@@ -1,0 +1,49 @@
+name: tile-transfer
+
+# 三进程拓扑：api --UDP--> relay --UDP--> receiver
+# relay 默认配置：转发 3 个数据包后把上限从 1200 降到 600 字节（模拟隧道降档），
+# 并丢弃 seq=9 的一份确认（演示重传与重叠去重）。
+
+services:
+  receiver:
+    build: .
+    command: ["uvicorn", "app.receiver_main:app", "--host", "0.0.0.0", "--port", "9001"]
+    environment:
+      UDP_PORT: "9000"
+    networks: [tilenet]
+
+  relay:
+    build: .
+    command: ["python", "-m", "app.relay"]
+    environment:
+      RELAY_LISTEN_PORT: "9999"
+      RELAY_TARGET_HOST: receiver
+      RELAY_TARGET_PORT: "9000"
+      RELAY_MAX_PAYLOAD: "1200"        # 初始数据包上限（字节）
+      RELAY_DOWNGRADE_AFTER: "3"       # 转发 3 个数据包后降档
+      RELAY_MAX_PAYLOAD_AFTER: "600"   # 降档后的上限
+      RELAY_DROP_ACK_SEQ: "9"          # 丢弃 seq=9 的一份确认（<0 关闭）
+      RELAY_STATS_PORT: "9100"
+    ports:
+      - "9100:9100"                    # 中继统计
+    depends_on:
+      - receiver
+    networks: [tilenet]
+
+  api:
+    build: .
+    command: ["uvicorn", "app.api_main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      RELAY_HOST: relay
+      RELAY_PORT: "9999"
+      RECEIVER_URL: http://receiver:9001
+      SEND_TIMEOUT_SEC: "0.5"
+    ports:
+      - "8000:8000"                    # 图块传输 API
+    depends_on:
+      - relay
+      - receiver
+    networks: [tilenet]
+
+networks:
+  tilenet:
